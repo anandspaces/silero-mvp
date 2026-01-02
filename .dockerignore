@@ -57,3 +57,6 @@ docs/
 tests/
 test_*.py
 *_test.py
+
+.venv
+*.wav
