@@ -1,0 +1,27 @@
+services:
+  silero-tts-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: silero-tts-api
+    ports:
+      - "9010:9010"
+    environment:
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ./:/app
+    restart: unless-stopped
+    # Uncomment below for GPU support (requires nvidia-docker)
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9010/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
