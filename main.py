@@ -1,6 +1,7 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+from contextlib import asynccontextmanager
 import torch
 from silero import silero_tts
 from aksharamukha import transliterate
@@ -8,20 +9,14 @@ import soundfile as sf
 import io
 import numpy as np
 
-app = FastAPI(title="Silero Hindi TTS API")
-
 # Global model variables
 device = None
 model = None
 
-class TTSRequest(BaseModel):
-    text: str
-    speaker: str = "hindi_male"  # or "hindi_female"
-    sample_rate: int = 48000
-
-@app.on_event("startup")
-async def load_model():
-    """Load the Silero TTS model on startup"""
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Lifespan event handler for startup and shutdown"""
+    # Startup: Load the model
     global device, model
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -34,6 +29,23 @@ async def load_model():
     )
     model.to(device)
     print("Model loaded successfully!")
+    
+    yield  # Application runs here
+    
+    # Shutdown: Clean up resources (optional)
+    print("Shutting down...")
+    del model
+    torch.cuda.empty_cache() if torch.cuda.is_available() else None
+
+app = FastAPI(
+    title="Silero Hindi TTS API",
+    lifespan=lifespan
+)
+
+class TTSRequest(BaseModel):
+    text: str
+    speaker: str = "hindi_male"  # Default speaker
+    sample_rate: int = 48000      # Default sample rate
 
 @app.get("/")
 async def root():
@@ -51,7 +63,7 @@ async def text_to_speech(request: TTSRequest):
     
     Args:
         text: Hindi text in Devanagari script
-        speaker: Speaker voice (hindi_male or hindi_female)
+        speaker: Speaker voice (default: hindi_male)
         sample_rate: Audio sample rate (default: 48000)
     
     Returns:
