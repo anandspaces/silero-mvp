@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -9,6 +9,7 @@ from aksharamukha import transliterate
 import soundfile as sf
 import io
 import numpy as np
+import json
 
 # Global model variables
 device = None
@@ -122,6 +123,88 @@ async def text_to_speech(request: TTSRequest):
         print(f"Error generating audio: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error generating audio: {str(e)}")
 
+@app.websocket("/ws/tts")
+async def websocket_tts(websocket: WebSocket):
+    """
+    WebSocket endpoint for streaming text-to-speech
+    
+    Expected message format:
+    {
+        "text": "Hindi text in Devanagari",
+        "speaker": "hindi_male",  // optional
+        "sample_rate": 48000       // optional
+    }
+    
+    Response format:
+    - Binary audio data (WAV format)
+    - Or JSON error message: {"error": "error message"}
+    """
+    await websocket.accept()
+    print("WebSocket connection established")
+    
+    try:
+        while True:
+            # Receive text data
+            data = await websocket.receive_text()
+            
+            try:
+                # Parse JSON message
+                message = json.loads(data)
+                text = message.get("text", "")
+                speaker = message.get("speaker", "hindi_male")
+                sample_rate = message.get("sample_rate", 48000)
+                
+                if not text.strip():
+                    await websocket.send_json({"error": "Text cannot be empty"})
+                    continue
+                
+                if model is None:
+                    await websocket.send_json({"error": "Model not loaded"})
+                    continue
+                
+                print(f"Processing: {text}")
+                
+                # Romanize Hindi text to ISO
+                roman_text = transliterate.process(
+                    "Devanagari",
+                    "ISO",
+                    text
+                )
+                print(f"Romanized: {roman_text}")
+                
+                # Generate audio
+                audio = model.apply_tts(
+                    text=roman_text,
+                    speaker=speaker,
+                    sample_rate=sample_rate
+                )
+                
+                # Convert to numpy array if it's a tensor
+                if isinstance(audio, torch.Tensor):
+                    audio = audio.cpu().numpy()
+                
+                # Create in-memory buffer
+                buffer = io.BytesIO()
+                sf.write(buffer, audio, sample_rate, format='WAV')
+                buffer.seek(0)
+                
+                # Send audio data
+                audio_bytes = buffer.read()
+                await websocket.send_bytes(audio_bytes)
+                print(f"Sent {len(audio_bytes)} bytes of audio")
+                
+            except json.JSONDecodeError:
+                await websocket.send_json({"error": "Invalid JSON format"})
+            except Exception as e:
+                error_msg = f"Error generating audio: {str(e)}"
+                print(error_msg)
+                await websocket.send_json({"error": error_msg})
+                
+    except WebSocketDisconnect:
+        print("WebSocket connection closed")
+    except Exception as e:
+        print(f"WebSocket error: {str(e)}")
+
 @app.get("/speakers")
 async def get_speakers():
     """Get list of available speakers"""
@@ -132,4 +215,4 @@ async def get_speakers():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run("main:app", host="0.0.0.0", port=9010, reload=True)
