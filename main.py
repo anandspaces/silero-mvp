@@ -15,72 +15,81 @@ import json
 device = None
 models = {}
 
-# Language configuration
+# Language configuration with ISO 639-1 codes
 LANGUAGE_CONFIG = {
-    "hindi": {
+    "hi": {  # Hindi
         "model_lang": "indic",
         "model_speaker": "v4_indic",
         "speakers": ["hindi_male", "hindi_female"],
         "romanization": lambda text: transliterate.process('Devanagari', 'ISO', text),
-        "default_speaker": "hindi_male"
+        "default_speaker": "hindi_male",
+        "name": "Hindi"
     },
-    "malayalam": {
+    "ml": {  # Malayalam
         "model_lang": "indic",
         "model_speaker": "v4_indic",
         "speakers": ["malayalam_male", "malayalam_female"],
         "romanization": lambda text: transliterate.process('Malayalam', 'ISO', text),
-        "default_speaker": "malayalam_male"
+        "default_speaker": "malayalam_male",
+        "name": "Malayalam"
     },
-    "manipuri": {
+    "mni": {  # Manipuri
         "model_lang": "indic",
         "model_speaker": "v4_indic",
         "speakers": ["manipuri_female"],
         "romanization": lambda text: transliterate.process('Bengali', 'ISO', text),
-        "default_speaker": "manipuri_female"
+        "default_speaker": "manipuri_female",
+        "name": "Manipuri"
     },
-    "bengali": {
+    "bn": {  # Bengali
         "model_lang": "indic",
         "model_speaker": "v4_indic",
         "speakers": ["bengali_male", "bengali_female"],
         "romanization": lambda text: transliterate.process('Bengali', 'ISO', text),
-        "default_speaker": "bengali_male"
+        "default_speaker": "bengali_male",
+        "name": "Bengali"
     },
-    "rajasthani": {
+    "raj": {  # Rajasthani
         "model_lang": "indic",
         "model_speaker": "v4_indic",
         "speakers": ["rajasthani_female"],
         "romanization": lambda text: transliterate.process('Devanagari', 'ISO', text),
-        "default_speaker": "rajasthani_female"
+        "default_speaker": "rajasthani_female",
+        "name": "Rajasthani"
     },
-    "tamil": {
+    "ta": {  # Tamil
         "model_lang": "indic",
         "model_speaker": "v4_indic",
         "speakers": ["tamil_male", "tamil_female"],
         "romanization": lambda text: transliterate.process('Tamil', 'ISO', text, pre_options=['TamilTranscribe']),
-        "default_speaker": "tamil_male"
+        "default_speaker": "tamil_male",
+        "name": "Tamil"
     },
-    "telugu": {
+    "te": {  # Telugu
         "model_lang": "indic",
         "model_speaker": "v4_indic",
         "speakers": ["telugu_male", "telugu_female"],
         "romanization": lambda text: transliterate.process('Telugu', 'ISO', text),
-        "default_speaker": "telugu_male"
+        "default_speaker": "telugu_male",
+        "name": "Telugu"
     },
-    "gujarati": {
+    "gu": {  # Gujarati
         "model_lang": "indic",
         "model_speaker": "v4_indic",
         "speakers": ["gujarati_male", "gujarati_female"],
         "romanization": lambda text: transliterate.process('Gujarati', 'ISO', text),
-        "default_speaker": "gujarati_male"
+        "default_speaker": "gujarati_male",
+        "name": "Gujarati"
     },
-    "kannada": {
+    "kn": {  # Kannada
         "model_lang": "indic",
         "model_speaker": "v4_indic",
         "speakers": ["kannada_male", "kannada_female"],
         "romanization": lambda text: transliterate.process('Kannada', 'ISO', text),
-        "default_speaker": "kannada_male"
+        "default_speaker": "kannada_male",
+        "name": "Kannada"
     },
-    "english": {
+    "en": {  # English
         "model_lang": "en",
         "model_speaker": "v3_en",
         "speakers": ["en_0", "en_1", "en_2", "en_3", "en_4", "en_5", "en_6", "en_7", "en_8", "en_9", 
@@ -97,8 +106,9 @@ LANGUAGE_CONFIG = {
                      "en_100", "en_101", "en_102", "en_103", "en_104", "en_105", "en_106", "en_107", 
                      "en_108", "en_109", "en_110", "en_111", "en_112", "en_113", "en_114", "en_115", 
                      "en_116", "en_117"],
-        "romanization": None,  # No romanization needed for English
-        "default_speaker": "en_0"
+        "romanization": None,
+        "default_speaker": "en_0",
+        "name": "English"
     }
 }
 
@@ -112,7 +122,7 @@ async def lifespan(app: FastAPI):
     
     # Load unique models (indic and english)
     unique_models = {}
-    for lang, config in LANGUAGE_CONFIG.items():
+    for lang_code, config in LANGUAGE_CONFIG.items():
         model_key = f"{config['model_lang']}_{config['model_speaker']}"
         if model_key not in unique_models:
             print(f"Loading model: {model_key}")
@@ -124,12 +134,12 @@ async def lifespan(app: FastAPI):
             unique_models[model_key] = model
             print(f"Model {model_key} loaded successfully!")
     
-    # Map languages to their models
-    for lang, config in LANGUAGE_CONFIG.items():
+    # Map language codes to their models
+    for lang_code, config in LANGUAGE_CONFIG.items():
         model_key = f"{config['model_lang']}_{config['model_speaker']}"
-        models[lang] = unique_models[model_key]
+        models[lang_code] = unique_models[model_key]
     
-    print(f"All models loaded. Supported languages: {list(models.keys())}")
+    print(f"All models loaded. Supported language codes: {list(models.keys())}")
     
     yield
     
@@ -141,7 +151,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Multi-Language Silero TTS API",
-    description="Text-to-Speech API supporting Indian languages and English",
+    description="Text-to-Speech API supporting Indian languages and English with ISO 639-1 language codes",
     lifespan=lifespan
 )
 
@@ -166,7 +176,7 @@ async def root():
     return {
         "status": "running",
         "device": str(device),
-        "supported_languages": list(LANGUAGE_CONFIG.keys()),
+        "supported_languages": {code: config["name"] for code, config in LANGUAGE_CONFIG.items()},
         "models_loaded": len(models)
     }
 
@@ -174,8 +184,9 @@ async def root():
 async def get_languages():
     """Get list of supported languages and their speakers"""
     language_info = {}
-    for lang, config in LANGUAGE_CONFIG.items():
-        language_info[lang] = {
+    for lang_code, config in LANGUAGE_CONFIG.items():
+        language_info[lang_code] = {
+            "name": config["name"],
             "speakers": config["speakers"],
             "default_speaker": config["default_speaker"]
         }
@@ -187,12 +198,13 @@ async def get_language_speakers(language: str):
     if language not in LANGUAGE_CONFIG:
         raise HTTPException(
             status_code=404, 
-            detail=f"Language '{language}' not supported. Available: {list(LANGUAGE_CONFIG.keys())}"
+            detail=f"Language code '{language}' not supported. Available: {list(LANGUAGE_CONFIG.keys())}"
         )
     
     config = LANGUAGE_CONFIG[language]
     return {
-        "language": language,
+        "language_code": language,
+        "language_name": config["name"],
         "speakers": config["speakers"],
         "default_speaker": config["default_speaker"]
     }
@@ -204,7 +216,7 @@ async def text_to_speech(request: TTSRequest):
     
     Args:
         text: Text in the specified language (required)
-        language: Language code (required) - hindi, tamil, english, etc.
+        language: ISO 639-1 language code (required) - en, hi, ta, bn, etc.
         speaker: Speaker voice (optional, uses default if not specified)
         sample_rate: Audio sample rate (optional, default: 48000)
     
@@ -215,7 +227,7 @@ async def text_to_speech(request: TTSRequest):
     if request.language not in LANGUAGE_CONFIG:
         raise HTTPException(
             status_code=400, 
-            detail=f"Language '{request.language}' not supported. Available: {list(LANGUAGE_CONFIG.keys())}"
+            detail=f"Language code '{request.language}' not supported. Available: {list(LANGUAGE_CONFIG.keys())}"
         )
     
     if not request.text.strip():
@@ -237,7 +249,7 @@ async def text_to_speech(request: TTSRequest):
     if speaker not in config["speakers"]:
         raise HTTPException(
             status_code=400,
-            detail=f"Speaker '{speaker}' not available for {request.language}. Available: {config['speakers']}"
+            detail=f"Speaker '{speaker}' not available for {config['name']} ({request.language}). Available: {config['speakers']}"
         )
     
     try:
@@ -285,7 +297,7 @@ async def websocket_tts(websocket: WebSocket):
     Expected message format:
     {
         "text": "Text in the specified language",  // required
-        "language": "hindi",  // required - any supported language
+        "language": "hi",  // required - ISO 639-1 code (en, hi, ta, bn, etc.)
         "speaker": "hindi_male",  // optional, uses default if not provided
         "sample_rate": 48000  // optional, default is 48000
     }
@@ -314,15 +326,15 @@ async def websocket_tts(websocket: WebSocket):
                 
                 if not language:
                     await websocket.send_json({
-                        "error": "Language is required",
-                        "available_languages": list(LANGUAGE_CONFIG.keys())
+                        "error": "Language code is required",
+                        "available_languages": {code: config["name"] for code, config in LANGUAGE_CONFIG.items()}
                     })
                     continue
                 
                 if language not in LANGUAGE_CONFIG:
                     await websocket.send_json({
-                        "error": f"Language '{language}' not supported",
-                        "available_languages": list(LANGUAGE_CONFIG.keys())
+                        "error": f"Language code '{language}' not supported",
+                        "available_languages": {code: config["name"] for code, config in LANGUAGE_CONFIG.items()}
                     })
                     continue
                 
@@ -340,12 +352,12 @@ async def websocket_tts(websocket: WebSocket):
                 # Validate speaker
                 if speaker not in config["speakers"]:
                     await websocket.send_json({
-                        "error": f"Speaker '{speaker}' not available for {language}",
+                        "error": f"Speaker '{speaker}' not available for {config['name']} ({language})",
                         "available_speakers": config["speakers"]
                     })
                     continue
                 
-                print(f"Processing {language}: {text}")
+                print(f"Processing {config['name']} ({language}): {text}")
                 
                 # Romanize text if needed
                 if config["romanization"]:
@@ -373,7 +385,7 @@ async def websocket_tts(websocket: WebSocket):
                 # Send audio data
                 audio_bytes = buffer.read()
                 await websocket.send_bytes(audio_bytes)
-                print(f"Sent {len(audio_bytes)} bytes of audio for {language}")
+                print(f"Sent {len(audio_bytes)} bytes of audio for {config['name']} ({language})")
                 
             except json.JSONDecodeError:
                 await websocket.send_json({"error": "Invalid JSON format"})
