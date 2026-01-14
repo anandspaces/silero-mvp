@@ -10,10 +10,12 @@ from aksharamukha import transliterate
 import soundfile as sf
 import io
 import json
+from text_normalizer import TTSTextNormalizer  # Import the normalizer
 
 # Global model variables
 device = None
 models = {}
+normalizer = None  # Add global normalizer
 
 # Language configuration with ISO 639-1 codes
 LANGUAGE_CONFIG = {
@@ -115,10 +117,14 @@ LANGUAGE_CONFIG = {
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifespan event handler for startup and shutdown"""
-    global device, models
+    global device, models, normalizer
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Loading models on device: {device}")
+    
+    # Initialize text normalizer
+    normalizer = TTSTextNormalizer()
+    print("Text normalizer initialized")
     
     # Load unique models (indic and english)
     unique_models = {}
@@ -169,6 +175,7 @@ class TTSRequest(BaseModel):
     language: str
     speaker: Optional[str] = None
     sample_rate: Optional[int] = None
+    normalize: Optional[bool] = True  # Enable normalization by default
 
 @app.get("/")
 async def root():
@@ -177,7 +184,8 @@ async def root():
         "status": "running",
         "device": str(device),
         "supported_languages": {code: config["name"] for code, config in LANGUAGE_CONFIG.items()},
-        "models_loaded": len(models)
+        "models_loaded": len(models),
+        "text_normalization": "enabled"
     }
 
 @app.get("/languages")
@@ -219,6 +227,7 @@ async def text_to_speech(request: TTSRequest):
         language: ISO 639-1 language code (required) - en, hi, ta, bn, etc.
         speaker: Speaker voice (optional, uses default if not specified)
         sample_rate: Audio sample rate (optional, default: 48000)
+        normalize: Enable text normalization for numbers/units (default: True)
     
     Returns:
         Audio file in WAV format
@@ -253,15 +262,22 @@ async def text_to_speech(request: TTSRequest):
         )
     
     try:
-        # Romanize text if needed (not for English)
-        if config["romanization"]:
-            processed_text = config["romanization"](request.text)
+        # STEP 1: Normalize text (numbers, units, etc.)
+        if request.normalize:
+            normalized_text = normalizer.normalize(request.text, request.language)
             print(f"Original: {request.text}")
+            print(f"Normalized: {normalized_text}")
+        else:
+            normalized_text = request.text
+        
+        # STEP 2: Romanize text if needed (not for English)
+        if config["romanization"]:
+            processed_text = config["romanization"](normalized_text)
             print(f"Romanized: {processed_text}")
         else:
-            processed_text = request.text
+            processed_text = normalized_text
         
-        # Generate audio
+        # STEP 3: Generate audio
         audio = model.apply_tts(
             text=processed_text,
             speaker=speaker,
@@ -299,7 +315,8 @@ async def websocket_tts(websocket: WebSocket):
         "text": "Text in the specified language",  // required
         "language": "hi",  // required - ISO 639-1 code (en, hi, ta, bn, etc.)
         "speaker": "hindi_male",  // optional, uses default if not provided
-        "sample_rate": 48000  // optional, default is 48000
+        "sample_rate": 48000,  // optional, default is 48000
+        "normalize": true  // optional, enable text normalization (default: true)
     }
     
     Response format:
@@ -319,6 +336,7 @@ async def websocket_tts(websocket: WebSocket):
                 language = message.get("language")
                 speaker = message.get("speaker")
                 sample_rate = message.get("sample_rate", 48000)
+                normalize = message.get("normalize", True)
                 
                 if not text.strip():
                     await websocket.send_json({"error": "Text cannot be empty"})
@@ -359,14 +377,21 @@ async def websocket_tts(websocket: WebSocket):
                 
                 print(f"Processing {config['name']} ({language}): {text}")
                 
-                # Romanize text if needed
+                # STEP 1: Normalize text
+                if normalize:
+                    normalized_text = normalizer.normalize(text, language)
+                    print(f"Normalized: {normalized_text}")
+                else:
+                    normalized_text = text
+                
+                # STEP 2: Romanize text if needed
                 if config["romanization"]:
-                    processed_text = config["romanization"](text)
+                    processed_text = config["romanization"](normalized_text)
                     print(f"Romanized: {processed_text}")
                 else:
-                    processed_text = text
+                    processed_text = normalized_text
                 
-                # Generate audio
+                # STEP 3: Generate audio
                 audio = model.apply_tts(
                     text=processed_text,
                     speaker=speaker,
@@ -401,4 +426,4 @@ async def websocket_tts(websocket: WebSocket):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=9010, reload=True)
+    uvicorn.run("main:app", host="0.0.0.0", port=9010, reload=False)
