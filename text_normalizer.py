@@ -4,7 +4,7 @@ Handles numbers, units, punctuation, and special cases
 """
 
 import re
-from typing import Dict, Callable
+from typing import Dict
 from num2words import num2words
 
 class TTSTextNormalizer:
@@ -117,7 +117,7 @@ class TTSTextNormalizer:
                 if ordinal:
                     return num2words(int(num), lang='en', to='ordinal')
                 return num2words(num, lang='en')
-            except:
+            except Exception:
                 # Last resort: return as string
                 return str(num)
     
