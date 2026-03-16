@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, File, UploadFile, Form
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -10,12 +10,18 @@ from aksharamukha import transliterate
 import soundfile as sf
 import io
 import json
+import base64
+import numpy as np
+from scipy.signal import resample_poly
 from text_normalizer import TTSTextNormalizer  # Import the normalizer
 
 # Global model variables
 device = None
 models = {}
 normalizer = None  # Add global normalizer
+
+# STT: language code -> (model, decoder, utils) from PyTorch Hub
+stt_models = {}
 
 # Language configuration with ISO 639-1 codes
 LANGUAGE_CONFIG = {
@@ -114,10 +120,21 @@ LANGUAGE_CONFIG = {
     }
 }
 
+# STT language config: ISO-style code -> Silero STT language name (from latest_silero_models.yml)
+STT_LANGUAGE_CONFIG = {
+    "en": {"name": "English"},
+    "de": {"name": "German"},
+    "es": {"name": "Spanish"},
+    "ua": {"name": "Ukrainian"},
+}
+
+# Silero STT expects 16 kHz
+STT_SAMPLE_RATE = 16000
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifespan event handler for startup and shutdown"""
-    global device, models, normalizer
+    global device, models, normalizer, stt_models
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Loading models on device: {device}")
@@ -147,17 +164,35 @@ async def lifespan(app: FastAPI):
     
     print(f"All models loaded. Supported language codes: {list(models.keys())}")
     
+    # Load STT models (PyTorch Hub)
+    for lang_code in STT_LANGUAGE_CONFIG:
+        try:
+            print(f"Loading STT model: {lang_code}")
+            model, decoder, utils = torch.hub.load(
+                repo_or_dir="snakers4/silero-models",
+                model="silero_stt",
+                language=lang_code,
+                device=device,
+            )
+            model.eval()
+            stt_models[lang_code] = (model, decoder, utils)
+            print(f"STT model {lang_code} loaded successfully!")
+        except Exception as e:
+            print(f"Failed to load STT model {lang_code}: {e}")
+    print(f"STT models loaded: {list(stt_models.keys())}")
+    
     yield
     
     # Shutdown
     print("Shutting down...")
     for model in unique_models.values():
         del model
+    stt_models.clear()
     torch.cuda.empty_cache() if torch.cuda.is_available() else None
 
 app = FastAPI(
-    title="Multi-Language Silero TTS API",
-    description="Text-to-Speech API supporting Indian languages and English with ISO 639-1 language codes",
+    title="Multi-Language Silero TTS & STT API",
+    description="Text-to-Speech and Speech-to-Text API supporting Indian languages, English, and other languages with ISO 639-1 language codes",
     lifespan=lifespan
 )
 
@@ -177,6 +212,29 @@ class TTSRequest(BaseModel):
     sample_rate: Optional[int] = None
     normalize: Optional[bool] = True  # Enable normalization by default
 
+
+def _run_stt(audio_bytes: bytes, language: str) -> str:
+    """Run Silero STT on audio bytes. Loads with soundfile (no TorchCodec/FFmpeg). Returns decoded text."""
+    if language not in stt_models:
+        raise ValueError(f"STT language '{language}' not loaded")
+    model, decoder, utils = stt_models[language]
+    _read_batch, _split_into_batches, _read_audio, prepare_model_input = utils
+    # Load with soundfile to avoid torchaudio.load (and TorchCodec/FFmpeg)
+    data, sr = sf.read(io.BytesIO(audio_bytes), dtype="float32", always_2d=False)
+    if data.ndim > 1:
+        data = data.mean(axis=1)
+    if sr != STT_SAMPLE_RATE:
+        # Resample to 16 kHz using scipy (no torchaudio dependency for load path)
+        data = resample_poly(data.astype(np.float64), STT_SAMPLE_RATE, sr).astype(np.float32)
+        sr = STT_SAMPLE_RATE
+    wav = torch.from_numpy(data).float().squeeze()
+    batch = [wav]
+    model_input = prepare_model_input(batch, device=device)
+    with torch.no_grad():
+        output = model(model_input)
+    return decoder(output[0].cpu())
+
+
 @app.get("/")
 async def root():
     """Health check endpoint"""
@@ -185,7 +243,9 @@ async def root():
         "device": str(device),
         "supported_languages": {code: config["name"] for code, config in LANGUAGE_CONFIG.items()},
         "models_loaded": len(models),
-        "text_normalization": "enabled"
+        "text_normalization": "enabled",
+        "stt_available": len(stt_models) > 0,
+        "stt_supported_languages": list(stt_models.keys()),
     }
 
 @app.get("/languages")
@@ -216,6 +276,57 @@ async def get_language_speakers(language: str):
         "speakers": config["speakers"],
         "default_speaker": config["default_speaker"]
     }
+
+
+@app.get("/stt/languages")
+async def get_stt_languages():
+    """Get list of supported STT languages"""
+    return {
+        code: {"name": config["name"]}
+        for code, config in STT_LANGUAGE_CONFIG.items()
+        if code in stt_models
+    }
+
+
+@app.post("/stt")
+async def speech_to_text(
+    language: str = Form(..., description="ISO 639-1 language code (e.g. en, de, es, ua)"),
+    audio: UploadFile = File(..., description="Audio file (WAV preferred, 16 kHz recommended)"),
+):
+    """
+    Convert speech to text (transcription).
+
+    Args:
+        language: ISO 639-1 language code (required) - en, de, es, ua.
+        audio: Audio file upload (required). WAV or other TorchAudio-compatible format; resampled to 16 kHz internally if needed.
+
+    Returns:
+        JSON with transcribed text: {"text": "..."}
+    """
+    if language not in STT_LANGUAGE_CONFIG:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Language code '{language}' not supported. Available: {list(stt_models.keys())}",
+        )
+    if language not in stt_models:
+        raise HTTPException(status_code=503, detail="STT model not loaded for this language")
+    if not audio.filename:
+        raise HTTPException(status_code=400, detail="Audio file is required")
+    try:
+        audio_bytes = await audio.read()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to read audio: {str(e)}")
+    if not audio_bytes:
+        raise HTTPException(status_code=400, detail="Audio file is empty")
+    try:
+        text = _run_stt(audio_bytes, language)
+        return {"text": text}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        print(f"Error transcribing audio: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error transcribing audio: {str(e)}")
+
 
 @app.post("/tts")
 async def text_to_speech(request: TTSRequest):
@@ -423,6 +534,86 @@ async def websocket_tts(websocket: WebSocket):
         print("WebSocket connection closed")
     except Exception as e:
         print(f"WebSocket error: {str(e)}")
+
+
+@app.websocket("/ws/stt")
+async def websocket_stt(websocket: WebSocket):
+    """
+    WebSocket endpoint for speech-to-text (transcription).
+
+    Expected message format:
+    {
+        "audio": "<base64-encoded audio bytes>",  // required
+        "language": "en"  // required - ISO 639-1 code (en, de, es, ua)
+    }
+
+    Response format:
+    - Success: {"text": "transcribed text"}
+    - Error: {"error": "error message"} or {"error": "...", "available_languages": [...]}
+    """
+    await websocket.accept()
+    print("WebSocket STT connection established")
+
+    try:
+        while True:
+            data = await websocket.receive_text()
+
+            try:
+                message = json.loads(data)
+                audio_b64 = message.get("audio", "")
+                language = message.get("language")
+
+                if not audio_b64:
+                    await websocket.send_json({"error": "Audio (base64) is required"})
+                    continue
+
+                if not language:
+                    await websocket.send_json({
+                        "error": "Language code is required",
+                        "available_languages": list(stt_models.keys()),
+                    })
+                    continue
+
+                if language not in STT_LANGUAGE_CONFIG:
+                    await websocket.send_json({
+                        "error": f"Language code '{language}' not supported",
+                        "available_languages": list(stt_models.keys()),
+                    })
+                    continue
+
+                if language not in stt_models:
+                    await websocket.send_json({"error": "STT model not loaded for this language"})
+                    continue
+
+                try:
+                    audio_bytes = base64.b64decode(audio_b64)
+                except Exception:
+                    await websocket.send_json({"error": "Invalid base64 in audio field"})
+                    continue
+
+                if not audio_bytes:
+                    await websocket.send_json({"error": "Audio data is empty"})
+                    continue
+
+                try:
+                    text = _run_stt(audio_bytes, language)
+                    await websocket.send_json({"text": text})
+                    print(f"STT ({language}): sent text length {len(text)}")
+                except ValueError as e:
+                    await websocket.send_json({"error": str(e)})
+                except Exception as e:
+                    error_msg = f"Error transcribing audio: {str(e)}"
+                    print(error_msg)
+                    await websocket.send_json({"error": error_msg})
+
+            except json.JSONDecodeError:
+                await websocket.send_json({"error": "Invalid JSON format"})
+
+    except WebSocketDisconnect:
+        print("WebSocket STT connection closed")
+    except Exception as e:
+        print(f"WebSocket STT error: {str(e)}")
+
 
 if __name__ == "__main__":
     import uvicorn
